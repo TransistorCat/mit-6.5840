@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,12 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+const (
+	Leader int = iota
+	Candidate
+	Follower
+)
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -66,8 +73,9 @@ type Raft struct {
 	commitIndex int
 	lastApplied int
 
-	nextIndex   []int
-	matchIndex  []int
+	nextIndex  []int
+	matchIndex []int
+	state      int
 }
 
 // return currentTerm and whether this server
@@ -77,8 +85,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
-	term=rf.currentTerm
-	isleader=rf.isLeader()
+	term = rf.currentTerm
+	isleader = rf.state == Leader
 
 	return term, isleader
 }
@@ -151,14 +159,22 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+
 	if args.term < rf.currentTerm {
 		reply.voteGranted = false
 		reply.term = rf.currentTerm
 		return
 	}
 
-	if args.term==rf.currentTerm  {
+	if args.term == rf.currentTerm && args.lastLogIndex < rf.commitIndex {
+		reply.voteGranted = false
+		reply.term = rf.currentTerm
+		return
+	}
 
+	reply.voteGranted = true
+	reply.term = args.term
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -264,7 +280,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
