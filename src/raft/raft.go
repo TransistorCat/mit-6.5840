@@ -168,7 +168,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	reply.Success = false
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm || rf.killed() {
 		return
 	}
 	if args.Term > rf.currentTerm {
@@ -218,7 +218,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm {
+
+	if args.Term < rf.currentTerm || rf.killed() {
 		return
 	}
 
@@ -332,7 +333,7 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 
 	for !rf.killed() {
-		// rf.notified = true
+		rf.notified = true
 		// Your code here (2A)
 		// Check if a leader election should be started.
 
@@ -346,7 +347,6 @@ func (rf *Raft) ticker() {
 					if rf.me == i {
 						continue
 					}
-					// Success := false
 					Reply := &AppendEntriesReply{}
 					ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
 						Term:         rf.currentTerm,
@@ -386,13 +386,13 @@ func (rf *Raft) ticker() {
 		if rf.state == Follower {
 			rf.state = Candidate
 		}
-		// rf.notified = false
-		ms := 30 + (rand.Int63() % 100)
+		rf.notified = false
+		ms := 30 + (rand.Int63() % 200)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		select {
 		case <-rf.done:
 			if rf.notified {
-				ms := 30 + (rand.Int63() % 100)
+				ms := 30 + (rand.Int63() % 200)
 				time.Sleep(time.Duration(ms) * time.Millisecond)
 				fmt.Printf("%d reset ticker\n", rf.me)
 				rf.notified = false
@@ -440,6 +440,7 @@ func (rf *Raft) elect() {
 			return
 		}
 	}
+	rf.state = Follower
 }
 
 // the service or tester wants to create a Raft server. the ports
