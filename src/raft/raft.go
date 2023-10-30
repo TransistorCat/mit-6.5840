@@ -85,6 +85,7 @@ type Raft struct {
 	matchIndex []int
 	state      int
 	done       chan bool
+	notified   bool
 }
 
 // return currentTerm and whether this server
@@ -170,15 +171,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		return
 	}
-	if args.Term >= rf.currentTerm {
+	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-		rf.state = Follower
 		reply.Term = args.Term
-		// go func() {
-		// 	rf.done <- true
-		// }()
-		fmt.Printf("%d receive entries\n", rf.me)
+
+		// fmt.Printf("%d receive entries\n", rf.me)
 	}
+	rf.state = Follower
+	reply.Success = true
+	go func() {
+		if !rf.notified {
+			rf.done <- true
+			rf.notified = true
+		}
+	}()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -222,6 +228,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.CandidateId == rf.me {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
+		fmt.Printf("%d votefor %d, it`s term is %d\n", rf.me, args.CandidateId, args.Term)
 		return
 	}
 	if args.Term > rf.currentTerm {
@@ -233,13 +240,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 		rf.state = Follower
-		// go func() {
-		// 	rf.done <- true
-		// }()
+		go func() {
+
+			if !rf.notified {
+				rf.done <- true
+				rf.notified = true
+			}
+
+		}()
 		// ms := 100 + (rand.Int63() % 50)
 		// time.Sleep(time.Duration(ms) * time.Millisecond)
 
-		fmt.Printf("%d votefor %d\n", rf.me, args.CandidateId)
+		fmt.Printf("%d votefor %d, it`s term is %d\n", rf.me, args.CandidateId, args.Term)
 	}
 
 }
@@ -320,17 +332,23 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 
 	for !rf.killed() {
-
+		// rf.notified = true
 		// Your code here (2A)
 		// Check if a leader election should be started.
-		if rf.state == Candidate {
-			rf.elect()
-		}
+
 		if rf.state == Leader {
 			for rf.state == Leader {
+				unReplyNum := 0
 				for i := 0; i < len(rf.peers); i++ {
+					if rf.state != Leader {
+						break
+					}
+					if rf.me == i {
+						continue
+					}
+					// Success := false
 					Reply := &AppendEntriesReply{}
-					rf.sendAppendEntries(i, &AppendEntriesArgs{
+					ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
 						Term:         rf.currentTerm,
 						LeaderId:     rf.me,
 						PrevLogIndex: rf.log[len(rf.log)-1].Index,
@@ -342,29 +360,49 @@ func (rf *Raft) ticker() {
 						rf.currentTerm = Reply.Term
 						break
 					}
+					// println("Reply.Term", Reply.Term, Reply.Success, rf.me)
+					if !Reply.Success || !ok {
+						unReplyNum++
+					}
+					if unReplyNum > len(rf.peers)/2 {
+						rf.state = Follower
+						fmt.Printf("%d become follower\n", rf.me)
+						// rf.currentTerm = Reply.Term
+						break
+					}
+
 				}
 
-				// ms := 100
+				// ms := 10
 				// time.Sleep(time.Duration(ms) * time.Millisecond)
 			}
 		}
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		if rf.state == Follower {
 
+		if rf.state == Candidate {
+			rf.elect()
+		}
+		if rf.state == Follower {
 			rf.state = Candidate
 		}
-		ms := 50 + (rand.Int63() % 200)
+		// rf.notified = false
+		ms := 30 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		select {
 		case <-rf.done:
-			ms := 50 + (rand.Int63() % 200)
-			time.Sleep(time.Duration(ms) * time.Millisecond)
-			fmt.Printf("%d reset ticker\n", rf.me)
+			if rf.notified {
+				ms := 30 + (rand.Int63() % 100)
+				time.Sleep(time.Duration(ms) * time.Millisecond)
+				fmt.Printf("%d reset ticker\n", rf.me)
+				rf.notified = false
+
+			}
 
 		default:
 			continue
 		}
+
 	}
 }
 
@@ -381,9 +419,12 @@ func (rf *Raft) elect() {
 		if rf.me == i {
 			continue
 		}
-		rf.sendRequestVote(i, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
-		if Reply.VoteGranted {
+		ok := rf.sendRequestVote(i, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
+		if Reply.VoteGranted && ok {
 			voteforme++
+		}
+		if rf.state == Follower {
+			return
 		}
 		if Reply.Term > rf.currentTerm {
 			rf.state = Follower
@@ -392,7 +433,7 @@ func (rf *Raft) elect() {
 		}
 		if voteforme > len(rf.peers)/2 {
 			rf.state = Leader
-			fmt.Printf("%d become leader\n", rf.me)
+			fmt.Printf("%d become leader, term is %d\n", rf.me, rf.currentTerm)
 			// rf.broadcastHeartbeat()
 			// rf.electionTimer.Stop()
 			// rf.broadcastHeartbeat()
@@ -417,7 +458,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	rf.commitIndex = 0
-	rf.currentTerm = 1
+	rf.currentTerm = 0
 	rf.matchIndex = make([]int, len(peers))
 	rf.votedFor = -1
 	rf.dead = 0
