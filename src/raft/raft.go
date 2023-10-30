@@ -84,12 +84,14 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 	state      int
+	done       chan bool
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	var term int
 	var isleader bool
 	// Your code here (2A).
@@ -168,10 +170,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		return
 	}
-	if args.Term > rf.currentTerm {
+	if args.Term >= rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.state = Follower
 		reply.Term = args.Term
+		// go func() {
+		// 	rf.done <- true
+		// }()
+		fmt.Printf("%d receive entries\n", rf.me)
 	}
 }
 
@@ -213,7 +219,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// if args.Term == rf.currentTerm && args.LastLogIndex < rf.commitIndex {
 	// 	return
 	// }
-
+	if args.CandidateId == rf.me {
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+		return
+	}
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.state = Follower
@@ -223,6 +233,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 		rf.state = Follower
+		// go func() {
+		// 	rf.done <- true
+		// }()
+		// ms := 100 + (rand.Int63() % 50)
+		// time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		fmt.Printf("%d votefor %d\n", rf.me, args.CandidateId)
 	}
 
 }
@@ -301,6 +318,7 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
+
 	for !rf.killed() {
 
 		// Your code here (2A)
@@ -326,25 +344,43 @@ func (rf *Raft) ticker() {
 					}
 				}
 
-				ms := 100
-				time.Sleep(time.Duration(ms) * time.Millisecond)
+				// ms := 100
+				// time.Sleep(time.Duration(ms) * time.Millisecond)
 			}
 		}
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		if rf.state == Follower {
+
 			rf.state = Candidate
 		}
-		ms := 150 + (rand.Int63() % 300)
+		ms := 50 + (rand.Int63() % 200)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+		select {
+		case <-rf.done:
+			ms := 50 + (rand.Int63() % 200)
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+			fmt.Printf("%d reset ticker\n", rf.me)
+
+		default:
+			continue
+		}
 	}
 }
 
 func (rf *Raft) elect() {
 	voteforme := 0
 	rf.currentTerm++
+	Reply := &RequestVoteReply{}
+	rf.sendRequestVote(rf.me, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
+	if Reply.VoteGranted {
+		voteforme++
+	}
 	for i := 0; i < len(rf.peers); i++ {
-		Reply := &RequestVoteReply{}
+		Reply = &RequestVoteReply{}
+		if rf.me == i {
+			continue
+		}
 		rf.sendRequestVote(i, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
 		if Reply.VoteGranted {
 			voteforme++
@@ -390,6 +426,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = Follower
 	rf.log =
 		make([]LogEntry, 1)
+	rf.done =
+		make(chan bool)
 
 	// Your initialization code here (2A, 2B, 2C).
 

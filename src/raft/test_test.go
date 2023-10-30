@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -61,6 +63,8 @@ func TestReElection2A(t *testing.T) {
 
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
+	// fmt.Printf("%d disconnect\n", leader1)
+	// time.Sleep(100 * time.Millisecond)
 	cfg.checkOneLeader()
 
 	// if the old leader rejoins, that shouldn't
@@ -72,6 +76,7 @@ func TestReElection2A(t *testing.T) {
 	// if there's no quorum, no new leader should
 	// be elected.
 	cfg.disconnect(leader2)
+	// fmt.Printf("%d disconnect\n", leader2)
 	cfg.disconnect((leader2 + 1) % servers)
 	time.Sleep(2 * RaftElectionTimeout)
 
@@ -106,16 +111,21 @@ func TestManyElections2A(t *testing.T) {
 		i2 := rand.Int() % servers
 		i3 := rand.Int() % servers
 		cfg.disconnect(i1)
+		fmt.Printf("%d disconnect\n", i1)
 		cfg.disconnect(i2)
+		fmt.Printf("%d disconnect\n", i2)
 		cfg.disconnect(i3)
+		fmt.Printf("%d disconnect\n", i3)
 
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
+		// time.Sleep(200 + time.Millisecond)
 		cfg.checkOneLeader()
 
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)
+		fmt.Println("reconnect")
 	}
 
 	cfg.checkOneLeader()
