@@ -86,6 +86,7 @@ type Raft struct {
 	state      int
 	done       chan bool
 	notified   bool
+	votefinish chan bool
 }
 
 // return currentTerm and whether this server
@@ -254,7 +255,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		fmt.Printf("%d votefor %d, it`s term is %d\n", rf.me, args.CandidateId, args.Term)
 	}
-
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -285,8 +285,21 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	fmt.Printf("%d 发投票请求给 %d\n", rf.me, server)
+	resultChan := make(chan bool)
+
+	go func() {
+		// 在新的 goroutine 中执行 RPC 调用
+		ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+		resultChan <- ok
+	}()
+	select {
+	case <-time.After(time.Duration(200) * time.Millisecond):
+		ok := false // 超时时返回nil
+		return ok
+	case ok := <-resultChan:
+		return ok
+	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -334,12 +347,18 @@ func (rf *Raft) ticker() {
 
 	for !rf.killed() {
 		rf.notified = true
+		if rf.state == Candidate {
+
+			rf.elect()
+
+		}
 		// Your code here (2A)
 		// Check if a leader election should be started.
 
 		if rf.state == Leader {
 			for rf.state == Leader {
 				unReplyNum := 0
+
 				for i := 0; i < len(rf.peers); i++ {
 					if rf.state != Leader {
 						break
@@ -370,6 +389,7 @@ func (rf *Raft) ticker() {
 						// rf.currentTerm = Reply.Term
 						break
 					}
+					// 获取结束时间
 
 				}
 
@@ -380,21 +400,18 @@ func (rf *Raft) ticker() {
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 
-		if rf.state == Candidate {
-			rf.elect()
-		}
 		if rf.state == Follower {
 			rf.state = Candidate
 		}
 		rf.notified = false
-		ms := 30 + (rand.Int63() % 200)
+		ms := 10 + (rand.Int63() % 150)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		select {
 		case <-rf.done:
 			if rf.notified {
-				ms := 30 + (rand.Int63() % 200)
+				ms := 10 + (rand.Int63() % 150)
 				time.Sleep(time.Duration(ms) * time.Millisecond)
-				fmt.Printf("%d reset ticker\n", rf.me)
+				// fmt.Printf("%d reset ticker\n", rf.me)
 				rf.notified = false
 
 			}
@@ -410,16 +427,26 @@ func (rf *Raft) elect() {
 	voteforme := 0
 	rf.currentTerm++
 	Reply := &RequestVoteReply{}
+
+	startTime := time.Now()
 	rf.sendRequestVote(rf.me, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
+	endTime := time.Now()
+	elapsedTime := endTime.Sub(startTime)
+	fmt.Printf("%d<-%d代码运行时间: %s\n", rf.me, rf.me, elapsedTime)
 	if Reply.VoteGranted {
 		voteforme++
 	}
+
 	for i := 0; i < len(rf.peers); i++ {
 		Reply = &RequestVoteReply{}
 		if rf.me == i {
 			continue
 		}
+		startTime := time.Now()
 		ok := rf.sendRequestVote(i, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
+		endTime := time.Now()
+		elapsedTime := endTime.Sub(startTime)
+		fmt.Printf("%d<-%d代码运行时间: %s\n", rf.me, i, elapsedTime)
 		if Reply.VoteGranted && ok {
 			voteforme++
 		}
@@ -439,6 +466,7 @@ func (rf *Raft) elect() {
 			// rf.broadcastHeartbeat()
 			return
 		}
+
 	}
 	rf.state = Follower
 }
@@ -461,7 +489,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = 0
 	rf.currentTerm = 0
 	rf.matchIndex = make([]int, len(peers))
-	rf.votedFor = -1
+	rf.votedFor = -2
 	rf.dead = 0
 	rf.nextIndex = make([]int, len(peers))
 	rf.lastApplied = 0
