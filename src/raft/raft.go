@@ -73,7 +73,7 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	log         []LogEntry
+	logs        []*LogEntry
 	currentTerm int
 	votedFor    int
 
@@ -85,7 +85,6 @@ type Raft struct {
 	state      int
 	done       chan bool
 	notified   bool
-	votefinish chan bool
 }
 
 // return currentTerm and whether this server
@@ -154,7 +153,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []LogEntry
+	Entries      []*LogEntry
 	LeaderCommit int
 }
 
@@ -177,7 +176,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// //fmt.Printf("%d receive entries\n", rf.me)
 	}
+	if rf.me == args.LeaderId {
+		rf.logs = append(rf.logs, args.Entries...)
+		rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
+		rf.lastApplied = rf.commitIndex
+		reply.Success = true
+		return
+	}
 	rf.state = Follower
+	lastLogIndex := len(rf.logs) - 1
+	if args.PrevLogIndex > rf.logs[lastLogIndex].Index || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		return
+	}
 	reply.Success = true
 	go func() {
 		if !rf.notified {
@@ -185,6 +195,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.notified = true
 		}
 	}()
+
+	index := args.PrevLogIndex
+	for i, entry := range args.Entries {
+		index++
+		if index < len(rf.logs) {
+			if rf.logs[index].Term == entry.Term {
+				continue
+			}
+			rf.logs = rf.logs[:index]
+		}
+		rf.logs = append(rf.logs, args.Entries[i:]...)
+		break
+	}
+
+	if rf.commitIndex < args.LeaderCommit {
+		lastLogIndex = rf.logs[len(rf.logs)-1].Index
+		if args.LeaderCommit > lastLogIndex {
+			rf.commitIndex = lastLogIndex
+		} else {
+			rf.commitIndex = args.LeaderCommit
+		}
+	}
+	go func() {
+		if !rf.notified {
+			rf.done <- true
+			rf.notified = true
+		}
+	}()
+
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -327,11 +366,31 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+
 	index := -1
 	term := -1
-	isLeader := true
+	term, isLeader := rf.GetState()
 
 	// Your code here (2B).
+	if isLeader {
+		// 处理命令
+		reply := &AppendEntriesReply{}
+		rf.AppendEntries(&AppendEntriesArgs{
+			Term:         term,
+			LeaderId:     rf.me,
+			PrevLogIndex: rf.commitIndex,
+			PrevLogTerm:  rf.logs[rf.commitIndex].Term,
+			Entries: []*LogEntry{
+				{
+					Term:    term,
+					Command: command,
+				},
+			},
+			LeaderCommit: rf.commitIndex}, reply)
+
+		// 返回结果
+		return index, term, isLeader
+	}
 
 	return index, term, isLeader
 }
@@ -382,9 +441,9 @@ func (rf *Raft) ticker() {
 					ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
 						Term:         rf.currentTerm,
 						LeaderId:     rf.me,
-						PrevLogIndex: rf.log[len(rf.log)-1].Index,
-						PrevLogTerm:  rf.log[len(rf.log)-1].Term,
-						Entries:      rf.log[len(rf.log)-1:],
+						PrevLogIndex: rf.logs[len(rf.logs)-1].Index,
+						PrevLogTerm:  rf.logs[len(rf.logs)-1].Term,
+						Entries:      rf.logs[len(rf.logs)-1:],
 						LeaderCommit: rf.commitIndex}, Reply)
 					if Reply.Term > rf.currentTerm {
 						rf.state = Follower
@@ -441,7 +500,7 @@ func (rf *Raft) elect() {
 	Reply := &RequestVoteReply{}
 
 	// startTime := time.Now()
-	rf.sendRequestVote(rf.me, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
+	rf.sendRequestVote(rf.me, &RequestVoteArgs{rf.currentTerm, rf.me, rf.logs[len(rf.logs)-1].Index, rf.logs[len(rf.logs)-1].Term}, Reply)
 	// endTime := time.Now()
 	// elapsedTime := endTime.Sub(startTime)
 	//fmt.Printf("%d<-%d代码运行时间: %s %v\n", rf.me, rf.me, elapsedTime, Reply.VoteGranted)
@@ -455,7 +514,7 @@ func (rf *Raft) elect() {
 			continue
 		}
 		// startTime := time.Now()
-		ok := rf.sendRequestVote(i, &RequestVoteArgs{rf.currentTerm, rf.me, rf.log[len(rf.log)-1].Index, rf.log[len(rf.log)-1].Term}, Reply)
+		ok := rf.sendRequestVote(i, &RequestVoteArgs{rf.currentTerm, rf.me, rf.logs[len(rf.logs)-1].Index, rf.logs[len(rf.logs)-1].Term}, Reply)
 		// endTime := time.Now()
 		// elapsedTime := endTime.Sub(startTime)
 		//fmt.Printf("%d<-%d代码运行时间: %s %v\n", rf.me, i, elapsedTime, Reply.VoteGranted)
@@ -506,8 +565,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.lastApplied = 0
 	rf.state = Follower
-	rf.log =
-		make([]LogEntry, 1)
+
+	log := LogEntry{Term: 0, Command: nil, Index: 0}
+	rf.logs =
+		make([]*LogEntry, 0)
+	rf.logs = append(rf.logs, &log)
 	rf.done =
 		make(chan bool)
 
