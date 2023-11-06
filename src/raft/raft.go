@@ -158,6 +158,7 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
+	Index   int
 	Term    int
 	Success bool
 }
@@ -167,6 +168,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
 	reply.Success = false
+	// reply.Index = -1
 	if args.Term < rf.currentTerm || rf.killed() {
 		return
 	}
@@ -178,9 +180,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if rf.me == args.LeaderId {
 		rf.logs = append(rf.logs, args.Entries...)
-		rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
-		rf.lastApplied = rf.commitIndex
+		// rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
+		// rf.lastApplied = rf.commitIndex
 		reply.Success = true
+		// reply.Index = rf.commitIndex
 		return
 	}
 	rf.state = Follower
@@ -188,6 +191,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.PrevLogIndex > rf.logs[lastLogIndex].Index || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
 		return
 	}
+
 	reply.Success = true
 	go func() {
 		if !rf.notified {
@@ -387,12 +391,61 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				},
 			},
 			LeaderCommit: rf.commitIndex}, reply)
+		rf.broadcastEntries(command)
 
 		// 返回结果
-		return index, term, isLeader
+		return rf.commitIndex, term, isLeader
 	}
 
 	return index, term, isLeader
+}
+
+func (rf *Raft) broadcastEntries(cmd any) {
+
+	SuccessNum := 0
+
+	for i := 0; i < len(rf.peers); i++ {
+		if rf.state != Leader {
+			break
+		}
+		if rf.me == i {
+			continue
+		}
+		Reply := &AppendEntriesReply{}
+		ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: rf.logs[len(rf.logs)-1].Index,
+			PrevLogTerm:  rf.logs[len(rf.logs)-1].Term,
+			Entries: []*LogEntry{
+				{
+					Term:    rf.currentTerm,
+					Command: cmd,
+				},
+			},
+			LeaderCommit: rf.commitIndex}, Reply)
+		if Reply.Term > rf.currentTerm {
+			rf.state = Follower
+			rf.currentTerm = Reply.Term
+			break
+		}
+		if !Reply.Success && Reply.Term == rf.currentTerm {
+			for !Reply.Success {
+				//回退一个term的Entries,直到
+				// rf.readTerm()
+			}
+		}
+		// println("Reply.Term", Reply.Term, Reply.Success, rf.me)
+		if Reply.Success && ok {
+			SuccessNum++
+		}
+		if SuccessNum > len(rf.peers)/2 {
+			rf.commitIndex++
+			break
+		}
+		// 获取结束时间
+
+	}
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
