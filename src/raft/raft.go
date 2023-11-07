@@ -70,14 +70,15 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
+	applyCh   chan ApplyMsg
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	logs           []*LogEntry
-	termStartIndex map[int]int
-	currentTerm    int
-	votedFor       int
+	logs []*LogEntry
+	// termStartIndex map[int]int
+	currentTerm int
+	votedFor    int
 
 	commitIndex int
 	lastApplied int
@@ -171,7 +172,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	reply.Success = false
 	// reply.Index = -1
-	if args.Term < rf.currentTerm || rf.killed() {
+	if args.Term < rf.currentTerm || rf.killed() || args.LeaderCommit < rf.commitIndex {
 		return
 	}
 	if args.Term > rf.currentTerm {
@@ -201,7 +202,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.notified = true
 		}
 	}()
-
+	fmt.Printf("%d %d %d %d\n", rf.me, rf.commitIndex, args.LeaderId, args.LeaderCommit)
+	if args.LeaderCommit > rf.commitIndex && len(rf.logs)-1 == args.LeaderCommit {
+		fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			CommandIndex: args.LeaderCommit,
+			Command:      rf.logs[args.LeaderCommit].Command,
+		}
+		fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
+		rf.applyCh <- applyMsg
+		rf.commitIndex = args.LeaderCommit
+	}
 	index := args.PrevLogIndex
 	for i, entry := range args.Entries {
 		index++
@@ -242,7 +254,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		resultChan <- ok
 	}()
 	select {
-	case <-time.After(time.Duration(10) * time.Millisecond):
+	case <-time.After(time.Duration(100) * time.Millisecond):
 		ok := false // 超时时返回nil
 		return ok
 	case ok := <-resultChan:
@@ -277,7 +289,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 
-	if args.Term < rf.currentTerm || rf.killed() {
+	if args.Term < rf.currentTerm || rf.killed() || args.LastLogIndex < rf.commitIndex {
 		return
 	}
 
@@ -380,21 +392,28 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	if isLeader {
 		// 处理命令
-		reply := &AppendEntriesReply{}
-		rf.sendAppendEntries(rf.me, &AppendEntriesArgs{
-			Term:         term,
-			LeaderId:     rf.me,
-			PrevLogIndex: rf.commitIndex,
-			PrevLogTerm:  rf.logs[rf.commitIndex].Term,
-			Entries: []*LogEntry{
-				{
-					Term:    term,
-					Command: command,
-				},
-			},
-			LeaderCommit: rf.commitIndex}, reply)
+		fmt.Printf("%d 处理命令 %v\n", rf.me, command)
+		// reply := &AppendEntriesReply{}
+		// rf.AppendEntries(&AppendEntriesArgs{
+		// 	Term:         term,
+		// 	LeaderId:     rf.me,
+		// 	PrevLogIndex: rf.commitIndex,
+		// 	PrevLogTerm:  rf.logs[rf.commitIndex].Term,
+		// 	Entries:
+		// 	},
+		// LeaderCommit: rf.commitIndex}, reply)
+		Entries := &LogEntry{
 
-		rf.broadcastEntries(command)
+			Term:    term,
+			Command: command,
+		}
+		//todo 解决增加日志报错问题
+		rf.logs = append(rf.logs, Entries)
+		// rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
+		// rf.lastApplied = rf.commitIndex
+		// reply.Success = true
+
+		// rf.broadcastEntries(command)
 		term, isLeader := rf.GetState()
 		// 返回结果
 		return rf.commitIndex, term, isLeader
@@ -415,17 +434,13 @@ func (rf *Raft) broadcastEntries(cmd any) {
 			continue
 		}
 		Reply := &AppendEntriesReply{}
+		rf.nextIndex[i] = len(rf.logs) - 1
 		ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: rf.logs[len(rf.logs)-1].Index,
-			PrevLogTerm:  rf.logs[len(rf.logs)-1].Term,
-			Entries: []*LogEntry{
-				{
-					Term:    rf.currentTerm,
-					Command: cmd,
-				},
-			},
+			PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
+			PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
+			Entries:      rf.logs[rf.nextIndex[i]:],
 			LeaderCommit: rf.commitIndex}, Reply)
 		if Reply.Term > rf.currentTerm {
 			rf.state = Follower
@@ -433,22 +448,21 @@ func (rf *Raft) broadcastEntries(cmd any) {
 			break
 		}
 		if !Reply.Success && Reply.Term == rf.currentTerm {
-			index := rf.logs[len(rf.logs)-1].Index
-			term := rf.logs[len(rf.logs)-1].Term
+			term := rf.currentTerm
 			for !Reply.Success {
 				//回退一个term的Entries,直到
-				for rf.logs[index].Term == term && index != 0 {
-					index--
+				for rf.logs[rf.nextIndex[i]].Term == term && rf.nextIndex[i] != 0 {
+					rf.nextIndex[i]--
 				}
 				Reply2 := &AppendEntriesReply{}
 				rf.sendAppendEntries(i, &AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
-					PrevLogIndex: rf.logs[index].Index,
-					PrevLogTerm:  rf.logs[index].Term,
-					Entries:      rf.logs[index:],
+					PrevLogIndex: rf.logs[rf.nextIndex[i]].Index,
+					PrevLogTerm:  rf.logs[rf.nextIndex[i]].Term,
+					Entries:      rf.logs[rf.nextIndex[i]:],
 					LeaderCommit: rf.commitIndex}, Reply2)
-				term = rf.logs[index].Term
+				term = rf.logs[rf.nextIndex[i]].Term
 				Reply = Reply2
 			}
 
@@ -456,10 +470,20 @@ func (rf *Raft) broadcastEntries(cmd any) {
 
 		if Reply.Success && ok {
 			SuccessNum++
+			rf.nextIndex[i] = len(rf.logs)
 		}
 		if SuccessNum > len(rf.peers)/2 {
+
 			rf.commitIndex++
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				CommandIndex: rf.commitIndex,
+				Command:      cmd,
+			}
+			fmt.Printf("%d apply %v\n", rf.me, cmd)
+			rf.applyCh <- applyMsg
 			fmt.Printf("%d commitIndex= %d\n", rf.me, rf.commitIndex)
+
 			break
 		}
 
@@ -521,7 +545,7 @@ func (rf *Raft) ticker() {
 						rf.currentTerm = Reply.Term
 						break
 					}
-					// println("Reply.Term", Reply.Term, Reply.Success, rf.me)
+					println("Reply.Term", Reply.Term, Reply.Success, rf.me, i)
 					if !Reply.Success || !ok {
 						unReplyNum++
 					}
@@ -535,7 +559,7 @@ func (rf *Raft) ticker() {
 
 				}
 
-				ms := 50
+				ms := 100
 				time.Sleep(time.Duration(ms) * time.Millisecond)
 			}
 		}
@@ -546,7 +570,7 @@ func (rf *Raft) ticker() {
 			rf.state = Candidate
 		}
 		rf.notified = false
-		ms := 50 + (rand.Int63() % 150)
+		ms := 100 + (rand.Int63() % 150)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		select {
 		case <-rf.done:
@@ -602,7 +626,7 @@ func (rf *Raft) elect() {
 		}
 		if voteforme > len(rf.peers)/2 {
 			rf.state = Leader
-			//fmt.Printf("%d become leader, term is %d\n", rf.me, rf.currentTerm)
+			fmt.Printf("%d become leader, term is %d\n", rf.me, rf.currentTerm)
 			// rf.broadcastHeartbeat()
 			// rf.electionTimer.Stop()
 			// rf.broadcastHeartbeat()
@@ -628,6 +652,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 	rf.commitIndex = 0
 	rf.currentTerm = 0
 	rf.matchIndex = make([]int, len(peers))
