@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -73,9 +74,10 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	logs        []*LogEntry
-	currentTerm int
-	votedFor    int
+	logs           []*LogEntry
+	termStartIndex map[int]int
+	currentTerm    int
+	votedFor       int
 
 	commitIndex int
 	lastApplied int
@@ -379,7 +381,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		// 处理命令
 		reply := &AppendEntriesReply{}
-		rf.AppendEntries(&AppendEntriesArgs{
+		rf.sendAppendEntries(rf.me, &AppendEntriesArgs{
 			Term:         term,
 			LeaderId:     rf.me,
 			PrevLogIndex: rf.commitIndex,
@@ -391,8 +393,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				},
 			},
 			LeaderCommit: rf.commitIndex}, reply)
-		rf.broadcastEntries(command)
 
+		rf.broadcastEntries(command)
+		term, isLeader := rf.GetState()
 		// 返回结果
 		return rf.commitIndex, term, isLeader
 	}
@@ -402,7 +405,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 func (rf *Raft) broadcastEntries(cmd any) {
 
-	SuccessNum := 0
+	SuccessNum := 1
 
 	for i := 0; i < len(rf.peers); i++ {
 		if rf.state != Leader {
@@ -430,20 +433,35 @@ func (rf *Raft) broadcastEntries(cmd any) {
 			break
 		}
 		if !Reply.Success && Reply.Term == rf.currentTerm {
+			index := rf.logs[len(rf.logs)-1].Index
+			term := rf.logs[len(rf.logs)-1].Term
 			for !Reply.Success {
 				//回退一个term的Entries,直到
-				// rf.readTerm()
+				for rf.logs[index].Term == term && index != 0 {
+					index--
+				}
+				Reply2 := &AppendEntriesReply{}
+				rf.sendAppendEntries(i, &AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: rf.logs[index].Index,
+					PrevLogTerm:  rf.logs[index].Term,
+					Entries:      rf.logs[index:],
+					LeaderCommit: rf.commitIndex}, Reply2)
+				term = rf.logs[index].Term
+				Reply = Reply2
 			}
+
 		}
-		// println("Reply.Term", Reply.Term, Reply.Success, rf.me)
+
 		if Reply.Success && ok {
 			SuccessNum++
 		}
 		if SuccessNum > len(rf.peers)/2 {
 			rf.commitIndex++
+			fmt.Printf("%d commitIndex= %d\n", rf.me, rf.commitIndex)
 			break
 		}
-		// 获取结束时间
 
 	}
 }
@@ -496,7 +514,7 @@ func (rf *Raft) ticker() {
 						LeaderId:     rf.me,
 						PrevLogIndex: rf.logs[len(rf.logs)-1].Index,
 						PrevLogTerm:  rf.logs[len(rf.logs)-1].Term,
-						Entries:      rf.logs[len(rf.logs)-1:],
+						Entries:      nil,
 						LeaderCommit: rf.commitIndex}, Reply)
 					if Reply.Term > rf.currentTerm {
 						rf.state = Follower
