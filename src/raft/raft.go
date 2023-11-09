@@ -214,6 +214,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				CommandIndex: i,
 				Command:      rf.logs[i].Command,
 			}
+			switch cmd := rf.logs[i].Command.(type) {
+			case string:
+				fmt.Printf("%d apply stringlength %d\n", rf.me, len(cmd))
+			case int:
+				fmt.Printf("%d apply %d\n", rf.me, cmd)
+			}
 			// fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
 			rf.applyCh <- applyMsg
 
@@ -452,33 +458,7 @@ func (rf *Raft) broadcastEntries(cmd any) {
 			rf.currentTerm = Reply.Term
 			break
 		}
-		if !Reply.Success && Reply.Term == rf.currentTerm {
-			term := rf.currentTerm
-			for !Reply.Success {
-				//回退一个term的Entries,直到
-				for rf.logs[rf.nextIndex[i]-1].Term == term && rf.nextIndex[i]-1 != 0 {
-					rf.nextIndex[i]--
-				}
-				Reply2 := &AppendEntriesReply{}
-				rf.sendAppendEntries(i, &AppendEntriesArgs{
-					Term:         rf.currentTerm,
-					LeaderId:     rf.me,
-					PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
-					PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
-					Entries:      nil,
-					LeaderCommit: rf.commitIndex}, Reply2)
-				term = rf.logs[rf.nextIndex[i]-1].Term
-				Reply = Reply2
-			}
-			Reply2 := &AppendEntriesReply{}
-			rf.sendAppendEntries(i, &AppendEntriesArgs{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
-				PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
-				Entries:      rf.logs[rf.nextIndex[i]:],
-				LeaderCommit: rf.commitIndex}, Reply2)
-		}
+		Reply = rf.retryAppendEntries(i, Reply)
 
 		if Reply.Success && ok {
 			SuccessNum++
@@ -505,6 +485,42 @@ func (rf *Raft) broadcastEntries(cmd any) {
 		}
 
 	}
+}
+
+func (rf *Raft) retryAppendEntries(i int, Reply *AppendEntriesReply) *AppendEntriesReply {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if !Reply.Success && Reply.Term == rf.currentTerm {
+		term := rf.currentTerm
+		Reply = &AppendEntriesReply{}
+		for !Reply.Success {
+			//回退一个term的Entries,直到
+			for rf.logs[rf.nextIndex[i]-1].Term == term && rf.nextIndex[i]-1 != 0 {
+				rf.nextIndex[i]--
+			}
+			Reply2 := &AppendEntriesReply{}
+			rf.sendAppendEntries(i, &AppendEntriesArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
+				PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
+				Entries:      nil,
+				LeaderCommit: rf.commitIndex}, Reply2)
+			term = rf.logs[rf.nextIndex[i]-1].Term
+			Reply = Reply2
+		}
+
+		Reply = &AppendEntriesReply{}
+		rf.sendAppendEntries(i, &AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
+			PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
+			Entries:      rf.logs[rf.nextIndex[i]:],
+			LeaderCommit: rf.commitIndex}, Reply)
+		fmt.Printf("%d send %d logs to %d\n", rf.me, len(rf.logs[rf.nextIndex[i]:]), i)
+	}
+	return Reply
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -562,37 +578,12 @@ func (rf *Raft) ticker() {
 						rf.currentTerm = Reply.Term
 						break
 					}
-					if !Reply.Success && Reply.Term == rf.currentTerm {
-						term := rf.currentTerm
-						for !Reply.Success {
-							//回退一个term的Entries,直到
-							for rf.logs[rf.nextIndex[i]-1].Term == term && rf.nextIndex[i]-1 != 0 {
-								rf.nextIndex[i]--
-							}
-							Reply2 := &AppendEntriesReply{}
-							rf.sendAppendEntries(i, &AppendEntriesArgs{
-								Term:         rf.currentTerm,
-								LeaderId:     rf.me,
-								PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
-								PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
-								Entries:      nil,
-								LeaderCommit: rf.commitIndex}, Reply2)
-							term = rf.logs[rf.nextIndex[i]-1].Term
-							Reply = Reply2
-						}
-						Reply2 := &AppendEntriesReply{}
-						rf.sendAppendEntries(i, &AppendEntriesArgs{
-							Term:         rf.currentTerm,
-							LeaderId:     rf.me,
-							PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
-							PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
-							Entries:      rf.logs[rf.nextIndex[i]:],
-							LeaderCommit: rf.commitIndex}, Reply2)
-						if Reply.Success && ok {
-							rf.nextIndex[i] = len(rf.logs)
-						}
 
+					Reply = rf.retryAppendEntries(i, Reply)
+					if Reply.Success && ok {
+						rf.nextIndex[i] = len(rf.logs)
 					}
+
 					// println("Reply.Term", Reply.Term, Reply.Success, rf.me, i)
 					if !Reply.Success || !ok {
 						unReplyNum++
