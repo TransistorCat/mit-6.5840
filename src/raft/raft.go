@@ -192,6 +192,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.state = Follower
 	lastLogIndex := len(rf.logs) - 1
 	if args.PrevLogIndex > rf.logs[lastLogIndex].Index || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Term = args.Term
+		// reply.Success = true
 		return
 	}
 
@@ -202,16 +204,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.notified = true
 		}
 	}()
-	fmt.Printf("%d %d %d %d\n", rf.me, rf.commitIndex, args.LeaderId, args.LeaderCommit)
+	// fmt.Printf("%d %d %d %d\n", rf.me, rf.commitIndex, args.LeaderId, args.LeaderCommit)
 	if args.LeaderCommit > rf.commitIndex && len(rf.logs)-1 == args.LeaderCommit {
-		fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
-		applyMsg := ApplyMsg{
-			CommandValid: true,
-			CommandIndex: args.LeaderCommit,
-			Command:      rf.logs[args.LeaderCommit].Command,
+		// fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
+		for i := rf.commitIndex + 1; i <= args.LeaderCommit; i++ {
+
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				CommandIndex: i,
+				Command:      rf.logs[i].Command,
+			}
+			// fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
+			rf.applyCh <- applyMsg
+
 		}
-		fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
-		rf.applyCh <- applyMsg
 		rf.commitIndex = args.LeaderCommit
 	}
 	index := args.PrevLogIndex
@@ -254,7 +260,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		resultChan <- ok
 	}()
 	select {
-	case <-time.After(time.Duration(100) * time.Millisecond):
+	case <-time.After(time.Duration(10) * time.Millisecond):
 		ok := false // 超时时返回nil
 		return ok
 	case ok := <-resultChan:
@@ -392,7 +398,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	if isLeader {
 		// 处理命令
-		fmt.Printf("%d 处理命令 %v\n", rf.me, command)
+		// fmt.Printf("%d 处理命令 %v\n", rf.me, command)
 		// reply := &AppendEntriesReply{}
 		// rf.AppendEntries(&AppendEntriesArgs{
 		// 	Term:         term,
@@ -407,13 +413,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 			Command: command,
 		}
-		//todo 解决增加日志报错问题
 		rf.logs = append(rf.logs, Entries)
 		// rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
 		// rf.lastApplied = rf.commitIndex
 		// reply.Success = true
 
-		// rf.broadcastEntries(command)
+		rf.broadcastEntries(command)
 		term, isLeader := rf.GetState()
 		// 返回结果
 		return rf.commitIndex, term, isLeader
@@ -451,21 +456,28 @@ func (rf *Raft) broadcastEntries(cmd any) {
 			term := rf.currentTerm
 			for !Reply.Success {
 				//回退一个term的Entries,直到
-				for rf.logs[rf.nextIndex[i]].Term == term && rf.nextIndex[i] != 0 {
+				for rf.logs[rf.nextIndex[i]-1].Term == term && rf.nextIndex[i]-1 != 0 {
 					rf.nextIndex[i]--
 				}
 				Reply2 := &AppendEntriesReply{}
 				rf.sendAppendEntries(i, &AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
-					PrevLogIndex: rf.logs[rf.nextIndex[i]].Index,
-					PrevLogTerm:  rf.logs[rf.nextIndex[i]].Term,
-					Entries:      rf.logs[rf.nextIndex[i]:],
+					PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
+					PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
+					Entries:      nil,
 					LeaderCommit: rf.commitIndex}, Reply2)
-				term = rf.logs[rf.nextIndex[i]].Term
+				term = rf.logs[rf.nextIndex[i]-1].Term
 				Reply = Reply2
 			}
-
+			Reply2 := &AppendEntriesReply{}
+			rf.sendAppendEntries(i, &AppendEntriesArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
+				PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
+				Entries:      rf.logs[rf.nextIndex[i]:],
+				LeaderCommit: rf.commitIndex}, Reply2)
 		}
 
 		if Reply.Success && ok {
@@ -480,10 +492,15 @@ func (rf *Raft) broadcastEntries(cmd any) {
 				CommandIndex: rf.commitIndex,
 				Command:      cmd,
 			}
-			fmt.Printf("%d apply %v\n", rf.me, cmd)
+			// fmt.Printf("%d apply %d\n", rf.me, len(cmd.(string)))
+			switch cmd := cmd.(type) {
+			case string:
+				fmt.Printf("%d apply stringlength %d\n", rf.me, len(cmd))
+			case int:
+				fmt.Printf("%d apply %d\n", rf.me, cmd)
+			}
 			rf.applyCh <- applyMsg
 			fmt.Printf("%d commitIndex= %d\n", rf.me, rf.commitIndex)
-
 			break
 		}
 
@@ -524,7 +541,6 @@ func (rf *Raft) ticker() {
 		if rf.state == Leader {
 			for rf.state == Leader {
 				unReplyNum := 0
-
 				for i := 0; i < len(rf.peers); i++ {
 					if rf.state != Leader {
 						break
@@ -533,6 +549,7 @@ func (rf *Raft) ticker() {
 						continue
 					}
 					Reply := &AppendEntriesReply{}
+					// fmt.Println(rf.me, rf.logs[len(rf.logs)-1].Index)
 					ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
 						Term:         rf.currentTerm,
 						LeaderId:     rf.me,
@@ -545,7 +562,38 @@ func (rf *Raft) ticker() {
 						rf.currentTerm = Reply.Term
 						break
 					}
-					println("Reply.Term", Reply.Term, Reply.Success, rf.me, i)
+					if !Reply.Success && Reply.Term == rf.currentTerm {
+						term := rf.currentTerm
+						for !Reply.Success {
+							//回退一个term的Entries,直到
+							for rf.logs[rf.nextIndex[i]-1].Term == term && rf.nextIndex[i]-1 != 0 {
+								rf.nextIndex[i]--
+							}
+							Reply2 := &AppendEntriesReply{}
+							rf.sendAppendEntries(i, &AppendEntriesArgs{
+								Term:         rf.currentTerm,
+								LeaderId:     rf.me,
+								PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
+								PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
+								Entries:      nil,
+								LeaderCommit: rf.commitIndex}, Reply2)
+							term = rf.logs[rf.nextIndex[i]-1].Term
+							Reply = Reply2
+						}
+						Reply2 := &AppendEntriesReply{}
+						rf.sendAppendEntries(i, &AppendEntriesArgs{
+							Term:         rf.currentTerm,
+							LeaderId:     rf.me,
+							PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
+							PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
+							Entries:      rf.logs[rf.nextIndex[i]:],
+							LeaderCommit: rf.commitIndex}, Reply2)
+						if Reply.Success && ok {
+							rf.nextIndex[i] = len(rf.logs)
+						}
+
+					}
+					// println("Reply.Term", Reply.Term, Reply.Success, rf.me, i)
 					if !Reply.Success || !ok {
 						unReplyNum++
 					}
@@ -556,7 +604,6 @@ func (rf *Raft) ticker() {
 						break
 					}
 					// 获取结束时间
-
 				}
 
 				ms := 100
@@ -575,7 +622,7 @@ func (rf *Raft) ticker() {
 		select {
 		case <-rf.done:
 			if rf.notified {
-				ms := 50 + (rand.Int63() % 150)
+				ms := 100 + (rand.Int63() % 150)
 				time.Sleep(time.Duration(ms) * time.Millisecond)
 				// //fmt.Printf("%d reset ticker\n", rf.me)
 				rf.notified = false
@@ -585,7 +632,6 @@ func (rf *Raft) ticker() {
 		default:
 			continue
 		}
-
 	}
 }
 
@@ -640,7 +686,7 @@ func (rf *Raft) elect() {
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
+// have the same ordser. persister is a place for this server to
 // save its persistent state, and also initially holds the most
 // recent saved state, if any. applyCh is a channel on which the
 // tester or service expects Raft to send ApplyMsg messages.
@@ -659,6 +705,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -2
 	rf.dead = 0
 	rf.nextIndex = make([]int, len(peers))
+	for i := 0; i < len(peers); i++ {
+		rf.nextIndex[i] = 1
+	}
 	rf.lastApplied = 0
 	rf.state = Follower
 
