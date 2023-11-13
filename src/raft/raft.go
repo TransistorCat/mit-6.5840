@@ -192,6 +192,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.state = Follower
 	lastLogIndex := len(rf.logs) - 1
 	if args.PrevLogIndex > rf.logs[lastLogIndex].Index || rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		// fmt.Printf("preindex:%d,%d,%d,%d,%d\n", args.PrevLogIndex, rf.me, rf.logs[lastLogIndex].Index, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
 		reply.Term = args.Term
 		// reply.Success = true
 		return
@@ -205,7 +206,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}()
 	// fmt.Printf("%d %d %d %d\n", rf.me, rf.commitIndex, args.LeaderId, args.LeaderCommit)
-	if args.LeaderCommit > rf.commitIndex && len(rf.logs)-1 == args.LeaderCommit {
+
+	index := args.PrevLogIndex
+	for i, entry := range args.Entries {
+		index++
+		fmt.Println("me", rf.me, "index", index, "len(rf.logs)", len(rf.logs))
+		if index < len(rf.logs) {
+			if rf.logs[index].Term == entry.Term {
+				fmt.Printf("%d skip %d\n", rf.me, index)
+				continue
+			}
+			fmt.Printf("%d long %d\n", rf.me, len(rf.logs))
+			rf.logs = rf.logs[:index]
+		}
+
+		// if args.Entries != nil {
+		rf.logs = append(rf.logs, args.Entries[i:]...)
+		// }
+		// fmt.Printf("%d append %d from %d\n", rf.me, len(args.Entries[i:]), args.LeaderId)
+		break
+	}
+	if args.LeaderCommit > rf.commitIndex && len(rf.logs)-1 >= args.LeaderCommit {
 		// fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
 		for i := rf.commitIndex + 1; i <= args.LeaderCommit; i++ {
 
@@ -218,7 +239,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			case string:
 				fmt.Printf("%d apply stringlength %d\n", rf.me, len(cmd))
 			case int:
-				fmt.Printf("%d apply %d\n", rf.me, cmd)
+				fmt.Printf("%d:%d apply %d\n", GetGid(), rf.me, cmd)
 			}
 			// fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
 			rf.applyCh <- applyMsg
@@ -226,27 +247,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 		rf.commitIndex = args.LeaderCommit
 	}
-	index := args.PrevLogIndex
-	for i, entry := range args.Entries {
-		index++
-		if index < len(rf.logs) {
-			if rf.logs[index].Term == entry.Term {
-				continue
-			}
-			rf.logs = rf.logs[:index]
-		}
-		rf.logs = append(rf.logs, args.Entries[i:]...)
-		break
-	}
-
-	if rf.commitIndex < args.LeaderCommit {
-		lastLogIndex = rf.logs[len(rf.logs)-1].Index
-		if args.LeaderCommit > lastLogIndex {
-			rf.commitIndex = lastLogIndex
-		} else {
-			rf.commitIndex = args.LeaderCommit
-		}
-	}
+	// if rf.commitIndex < args.LeaderCommit {
+	// 	lastLogIndex = rf.logs[len(rf.logs)-1].Index
+	// 	if args.LeaderCommit > lastLogIndex {
+	// 		rf.commitIndex = lastLogIndex
+	// 	} else {
+	// 		rf.commitIndex = args.LeaderCommit
+	// 	}
+	// }
 	go func() {
 		if !rf.notified {
 			rf.done <- true
@@ -266,7 +274,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		resultChan <- ok
 	}()
 	select {
-	case <-time.After(time.Duration(10) * time.Millisecond):
+	case <-time.After(time.Duration(50) * time.Millisecond):
 		ok := false // 超时时返回nil
 		return ok
 	case ok := <-resultChan:
@@ -415,7 +423,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// 	},
 		// LeaderCommit: rf.commitIndex}, reply)
 		Entries := &LogEntry{
-
+			Index:   len(rf.logs),
 			Term:    term,
 			Command: command,
 		}
@@ -423,9 +431,23 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
 		// rf.lastApplied = rf.commitIndex
 		// reply.Success = true
-
-		rf.broadcastEntries(command)
 		term, isLeader := rf.GetState()
+
+		if ok := rf.broadcastEntries(command); !ok {
+			// switch command := command.(type) {
+			// case string:
+			// 	fmt.Printf("%d return stringlength %d\n", rf.me, len(command))
+			// case int:
+			// 	fmt.Printf("%d return %d\n", rf.me, command)
+			// }
+			return rf.commitIndex + 1, term, isLeader
+		}
+		// switch command := command.(type) {
+		// case string:
+		// 	fmt.Printf("%d return stringlength %d\n", rf.me, len(command))
+		// case int:
+		// 	fmt.Printf("%d return %d\n", rf.me, command)
+		// }
 		// 返回结果
 		return rf.commitIndex, term, isLeader
 	}
@@ -433,7 +455,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-func (rf *Raft) broadcastEntries(cmd any) {
+func (rf *Raft) broadcastEntries(cmd any) bool {
 
 	SuccessNum := 1
 
@@ -458,11 +480,11 @@ func (rf *Raft) broadcastEntries(cmd any) {
 			rf.currentTerm = Reply.Term
 			break
 		}
+		fmt.Printf("%d:%d to %d %v\n", GetGid(), rf.me, i, Reply.Success)
 		Reply = rf.retryAppendEntries(i, Reply)
 
 		if Reply.Success && ok {
 			SuccessNum++
-			rf.nextIndex[i] = len(rf.logs)
 		}
 		if SuccessNum > len(rf.peers)/2 {
 
@@ -481,23 +503,27 @@ func (rf *Raft) broadcastEntries(cmd any) {
 			}
 			rf.applyCh <- applyMsg
 			fmt.Printf("%d commitIndex= %d\n", rf.me, rf.commitIndex)
-			break
+			return true
 		}
 
 	}
+	return false
+
 }
 
 func (rf *Raft) retryAppendEntries(i int, Reply *AppendEntriesReply) *AppendEntriesReply {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	// fmt.Printf("%d send to %d\n", rf.me, i)
 	if !Reply.Success && Reply.Term == rf.currentTerm {
 		term := rf.currentTerm
 		Reply = &AppendEntriesReply{}
 		for !Reply.Success {
 			//回退一个term的Entries,直到
-			for rf.logs[rf.nextIndex[i]-1].Term == term && rf.nextIndex[i]-1 != 0 {
+			for rf.logs[rf.nextIndex[i]-1].Term == term && rf.nextIndex[i]-1 != 0 && rf.nextIndex[i] > rf.matchIndex[i]+1 {
 				rf.nextIndex[i]--
 			}
+			// fmt.Printf("term %d\n", term)
 			Reply2 := &AppendEntriesReply{}
 			rf.sendAppendEntries(i, &AppendEntriesArgs{
 				Term:         rf.currentTerm,
@@ -518,8 +544,13 @@ func (rf *Raft) retryAppendEntries(i int, Reply *AppendEntriesReply) *AppendEntr
 			PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
 			Entries:      rf.logs[rf.nextIndex[i]:],
 			LeaderCommit: rf.commitIndex}, Reply)
-		fmt.Printf("%d send %d logs to %d\n", rf.me, len(rf.logs[rf.nextIndex[i]:]), i)
+		fmt.Printf("%d:%d send %d logs to %d\n", GetGid(), rf.me, len(rf.logs[rf.nextIndex[i]:]), i)
 	}
+	if Reply.Success {
+		rf.nextIndex[i] = len(rf.logs)
+		rf.matchIndex[i] = len(rf.logs) - 1
+	}
+
 	return Reply
 }
 
@@ -578,11 +609,8 @@ func (rf *Raft) ticker() {
 						rf.currentTerm = Reply.Term
 						break
 					}
-
+					// fmt.Printf("ticker %d to %d %v\n", rf.me, i, Reply.Success)
 					Reply = rf.retryAppendEntries(i, Reply)
-					if Reply.Success && ok {
-						rf.nextIndex[i] = len(rf.logs)
-					}
 
 					// println("Reply.Term", Reply.Term, Reply.Success, rf.me, i)
 					if !Reply.Success || !ok {
@@ -608,12 +636,12 @@ func (rf *Raft) ticker() {
 			rf.state = Candidate
 		}
 		rf.notified = false
-		ms := 100 + (rand.Int63() % 150)
+		ms := 100 + (rand.Int63() % 350)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		select {
 		case <-rf.done:
 			if rf.notified {
-				ms := 100 + (rand.Int63() % 150)
+				ms := 100 + (rand.Int63() % 350)
 				time.Sleep(time.Duration(ms) * time.Millisecond)
 				// //fmt.Printf("%d reset ticker\n", rf.me)
 				rf.notified = false
