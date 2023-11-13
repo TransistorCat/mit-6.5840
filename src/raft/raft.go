@@ -210,9 +210,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	index := args.PrevLogIndex
 	for i, entry := range args.Entries {
 		index++
-		fmt.Println("me", rf.me, "index", index, "len(rf.logs)", len(rf.logs))
+		fmt.Println(GetGid(), ":", rf.me, "index", index, "len(rf.logs)", len(rf.logs))
 		if index < len(rf.logs) {
 			if rf.logs[index].Term == entry.Term {
+
 				fmt.Printf("%d skip %d\n", rf.me, index)
 				continue
 			}
@@ -480,7 +481,7 @@ func (rf *Raft) broadcastEntries(cmd any) bool {
 			rf.currentTerm = Reply.Term
 			break
 		}
-		fmt.Printf("%d:%d to %d %v\n", GetGid(), rf.me, i, Reply.Success)
+		fmt.Printf("%d:%d to %d %v %d\n", GetGid(), rf.me, i, Reply.Success, rf.logs[rf.nextIndex[i]-1].Index)
 		Reply = rf.retryAppendEntries(i, Reply)
 
 		if Reply.Success && ok {
