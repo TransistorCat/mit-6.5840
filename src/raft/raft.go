@@ -233,7 +233,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if args.LeaderCommit > rf.commitIndex && len(rf.logs)-1 >= args.LeaderCommit {
 		// fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
-		for i := rf.commitIndex + 1; i <= args.LeaderCommit; i++ {
+		for i := rf.lastApplied + 1; i <= args.LeaderCommit; i++ {
 
 			applyMsg := ApplyMsg{
 				CommandValid: true,
@@ -315,7 +315,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 
-	if args.Term < rf.currentTerm || rf.killed() || args.LastLogIndex < rf.commitIndex {
+	if args.Term < rf.currentTerm || rf.killed() || args.LastLogIndex < rf.commitIndex || args.LastLogTerm < rf.logs[rf.commitIndex].Term {
 		return
 	}
 
@@ -457,6 +457,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			// case int:
 			// 	fmt.Printf("%d return %d\n", rf.me, command)
 			// }
+			rf.logs = rf.logs[:rf.commitIndex+1]
 			return rf.commitIndex + 1, term, isLeader
 		}
 		// switch command := command.(type) {

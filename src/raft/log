@@ -16,6 +16,7 @@ Test (2B): rejoin of partitioned leader ...
 18454:0 to 2 false 1
 0 send 1 PrevLogIndex 1 cmd 103
 18454:0 to 1 false 1
+
 1 become leader, term is 2
 1 send 0 PrevLogIndex 1 cmd 103
 18664 : 2 index 1 len(rf.logs) 2
@@ -28,7 +29,7 @@ Test (2B): rejoin of partitioned leader ...
 1 apply 103
 1 commitIndex= 2
 18636:2 apply 103
-0 become leader, term is 5
+0 become leader, term is 5 //0不该当选
 0 send 1 PrevLogIndex 1 cmd 104
 18454:0 to 1 false 1
 0 send 2 PrevLogIndex 1 cmd 104
