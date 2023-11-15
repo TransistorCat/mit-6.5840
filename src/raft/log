@@ -1,0 +1,44 @@
+Test (2B): rejoin of partitioned leader ...
+0 become leader, term is 1
+0 send 1 PrevLogIndex 0 cmd 101
+18464 : 1 index 1 len(rf.logs) 1
+18454:0 to 1 true 0
+0 apply 101
+0 commitIndex= 1
+18534:1 apply 101
+18579 : 2 index 1 len(rf.logs) 1
+18579:2 apply 101
+18456:0 send 1 logs to 2
+
+0 send 1 PrevLogIndex 1 cmd 102
+18454:0 to 1 false 1
+0 send 2 PrevLogIndex 1 cmd 102
+18454:0 to 2 false 1
+0 send 1 PrevLogIndex 1 cmd 103
+18454:0 to 1 false 1
+1 become leader, term is 2
+1 send 0 PrevLogIndex 1 cmd 103
+18664 : 2 index 1 len(rf.logs) 2
+2 skip 1
+18458:1 send 2 logs to 2
+18454:1 to 0 false 1
+1 send 2 PrevLogIndex 1 cmd 103
+18669 : 2 index 2 len(rf.logs) 2
+18454:1 to 2 true 1
+1 apply 103
+1 commitIndex= 2
+18636:2 apply 103
+0 become leader, term is 5
+0 send 1 PrevLogIndex 1 cmd 104
+18454:0 to 1 false 1
+0 send 2 PrevLogIndex 1 cmd 104
+18454:0 to 2 false 1
+2 become leader, term is 6
+65397:0 apply 104
+65386 : 0 index 1 len(rf.logs) 3
+0 skip 1
+2023/11/15 15:06:35 0: log map[1:101]; server map[1:101 2:103]
+2023/11/15 15:06:35 0: log map[1:101]; server map[1:101 2:103]
+65386 : 0 index 2 len(rf.logs) 3
+2023/11/15 15:06:35 apply error: commit index=2 server=0 104 != server=2 103
+0 long 3                

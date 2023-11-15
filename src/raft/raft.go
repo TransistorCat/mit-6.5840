@@ -88,6 +88,10 @@ type Raft struct {
 	state      int
 	done       chan bool
 	notified   bool
+
+	start sync.Mutex
+
+	preCommand any
 }
 
 // return currentTerm and whether this server
@@ -210,14 +214,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	index := args.PrevLogIndex
 	for i, entry := range args.Entries {
 		index++
-		fmt.Println(GetGid(), ":", rf.me, "index", index, "len(rf.logs)", len(rf.logs))
+		// fmt.Println(GetGid(), ":", rf.me, "index", index, "len(rf.logs)", len(rf.logs))
 		if index < len(rf.logs) {
 			if rf.logs[index].Term == entry.Term {
 
-				fmt.Printf("%d skip %d\n", rf.me, index)
+				// fmt.Printf("%d skip %d\n", rf.me, index)
 				continue
 			}
-			fmt.Printf("%d long %d\n", rf.me, len(rf.logs))
+			// fmt.Printf("%d long %d\n", rf.me, len(rf.logs))
 			rf.logs = rf.logs[:index]
 		}
 
@@ -244,6 +248,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			}
 			// fmt.Printf("%d apply %v\n", rf.me, rf.logs[args.LeaderCommit].Command)
 			rf.applyCh <- applyMsg
+			rf.lastApplied++
 
 		}
 		rf.commitIndex = args.LeaderCommit
@@ -405,36 +410,47 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
 	index := -1
 	term := -1
 	term, isLeader := rf.GetState()
 
 	// Your code here (2B).
 	if isLeader {
+		rf.start.Lock()
+		defer rf.start.Unlock()
 		// 处理命令
 		// fmt.Printf("%d 处理命令 %v\n", rf.me, command)
+		log := &LogEntry{
+			Index:   rf.commitIndex + 1,
+			Term:    term,
+			Command: command,
+		}
+
+		if rf.preCommand == command {
+			log = &LogEntry{
+				Index:   rf.commitIndex,
+				Term:    term,
+				Command: command,
+			}
+		}
+
 		// reply := &AppendEntriesReply{}
 		// rf.AppendEntries(&AppendEntriesArgs{
 		// 	Term:         term,
 		// 	LeaderId:     rf.me,
 		// 	PrevLogIndex: rf.commitIndex,
 		// 	PrevLogTerm:  rf.logs[rf.commitIndex].Term,
-		// 	Entries:
-		// 	},
-		// LeaderCommit: rf.commitIndex}, reply)
-		Entries := &LogEntry{
-			Index:   len(rf.logs),
-			Term:    term,
-			Command: command,
-		}
-		rf.logs = append(rf.logs, Entries)
+		// 	Entries:      []*LogEntry{log},
+		// 	LeaderCommit: rf.commitIndex}, reply)
+		rf.logs = append(rf.logs[:log.Index], log)
 		// rf.commitIndex = min(args.LeaderCommit, len(rf.logs)-1)
 		// rf.lastApplied = rf.commitIndex
 		// reply.Success = true
-		term, isLeader := rf.GetState()
-
-		if ok := rf.broadcastEntries(command); !ok {
+		rf.preCommand = command
+		term, isLeader = rf.GetState()
+		if ok := rf.broadcastEntries(log); !ok {
 			// switch command := command.(type) {
 			// case string:
 			// 	fmt.Printf("%d return stringlength %d\n", rf.me, len(command))
@@ -450,13 +466,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		// 	fmt.Printf("%d return %d\n", rf.me, command)
 		// }
 		// 返回结果
+
 		return rf.commitIndex, term, isLeader
 	}
 
 	return index, term, isLeader
 }
 
-func (rf *Raft) broadcastEntries(cmd any) bool {
+func (rf *Raft) broadcastEntries(log *LogEntry) bool {
 
 	SuccessNum := 1
 
@@ -469,12 +486,13 @@ func (rf *Raft) broadcastEntries(cmd any) bool {
 		}
 		Reply := &AppendEntriesReply{}
 		rf.nextIndex[i] = len(rf.logs) - 1
+		fmt.Println(rf.me, "send", i, "PrevLogIndex", log.Index-1, "cmd", log.Command)
 		ok := rf.sendAppendEntries(i, &AppendEntriesArgs{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
-			PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
-			PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
-			Entries:      rf.logs[rf.nextIndex[i]:],
+			PrevLogIndex: log.Index - 1,
+			PrevLogTerm:  rf.logs[log.Index-1].Term,
+			Entries:      []*LogEntry{log},
 			LeaderCommit: rf.commitIndex}, Reply)
 		if Reply.Term > rf.currentTerm {
 			rf.state = Follower
@@ -489,21 +507,26 @@ func (rf *Raft) broadcastEntries(cmd any) bool {
 		}
 		if SuccessNum > len(rf.peers)/2 {
 
-			rf.commitIndex++
-			applyMsg := ApplyMsg{
-				CommandValid: true,
-				CommandIndex: rf.commitIndex,
-				Command:      cmd,
+			rf.commitIndex = len(rf.logs) - 1
+			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+
+				applyMsg := ApplyMsg{
+					CommandValid: true,
+					CommandIndex: rf.commitIndex,
+					Command:      rf.logs[i].Command,
+				}
+				// fmt.Printf("%d apply %d\n", rf.me, len(cmd.(string)))
+				switch cmd := rf.logs[i].Command.(type) {
+				case string:
+					fmt.Printf("%d apply stringlength %d\n", rf.me, len(cmd))
+				case int:
+					fmt.Printf("%d apply %d\n", rf.me, cmd)
+				}
+
+				rf.applyCh <- applyMsg
+				rf.lastApplied++
+				fmt.Printf("%d commitIndex= %d\n", rf.me, rf.commitIndex)
 			}
-			// fmt.Printf("%d apply %d\n", rf.me, len(cmd.(string)))
-			switch cmd := cmd.(type) {
-			case string:
-				fmt.Printf("%d apply stringlength %d\n", rf.me, len(cmd))
-			case int:
-				fmt.Printf("%d apply %d\n", rf.me, cmd)
-			}
-			rf.applyCh <- applyMsg
-			fmt.Printf("%d commitIndex= %d\n", rf.me, rf.commitIndex)
 			return true
 		}
 
@@ -543,13 +566,13 @@ func (rf *Raft) retryAppendEntries(i int, Reply *AppendEntriesReply) *AppendEntr
 			LeaderId:     rf.me,
 			PrevLogIndex: rf.logs[rf.nextIndex[i]-1].Index,
 			PrevLogTerm:  rf.logs[rf.nextIndex[i]-1].Term,
-			Entries:      rf.logs[rf.nextIndex[i]:],
+			Entries:      rf.logs[rf.nextIndex[i] : rf.commitIndex+1],
 			LeaderCommit: rf.commitIndex}, Reply)
 		fmt.Printf("%d:%d send %d logs to %d\n", GetGid(), rf.me, len(rf.logs[rf.nextIndex[i]:]), i)
 	}
 	if Reply.Success {
-		rf.nextIndex[i] = len(rf.logs)
-		rf.matchIndex[i] = len(rf.logs) - 1
+		rf.nextIndex[i] = rf.commitIndex + 1
+		rf.matchIndex[i] = rf.nextIndex[i] - 1
 	}
 
 	return Reply
