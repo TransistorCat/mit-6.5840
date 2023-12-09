@@ -750,16 +750,21 @@ func TestPersist22C(t *testing.T) {
 		leader1 := cfg.checkOneLeader()
 
 		cfg.disconnect((leader1 + 1) % servers)
+		DPrintf(dDrop, "S%d disconnect", (leader1+1)%servers)
 		cfg.disconnect((leader1 + 2) % servers)
-
+		DPrintf(dDrop, "S%d disconnect", (leader1+2)%servers)
 		cfg.one(10+index, servers-2, true)
 		index++
 
 		cfg.disconnect((leader1 + 0) % servers)
+		DPrintf(dDrop, "S%d disconnect", (leader1+0)%servers)
 		cfg.disconnect((leader1 + 3) % servers)
+		DPrintf(dDrop, "S%d disconnect", (leader1+3)%servers)
 		cfg.disconnect((leader1 + 4) % servers)
+		DPrintf(dDrop, "S%d disconnect", (leader1+4)%servers)
 
 		cfg.start1((leader1+1)%servers, cfg.applier)
+
 		cfg.start1((leader1+2)%servers, cfg.applier)
 		cfg.connect((leader1 + 1) % servers)
 		cfg.connect((leader1 + 2) % servers)
